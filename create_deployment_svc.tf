@@ -27,6 +27,7 @@ resource "kubernetes_deployment" "app" {
     name      = var.appName
     namespace = var.xcNamespace
     annotations = {
+      "owner-id" = "${var.xcNamespace}"
       "ves.io/sites" = format("ves-io-system/%s", var.xcSiteName)
       "ves.io/workload-flavor" = var.xcWorkloadFlavor 
     }
@@ -71,7 +72,8 @@ resource "kubernetes_service" "app-svc" {
     name      = format("%s-svc", var.appName)
     namespace = var.xcNamespace
     annotations = {
-        "ves.io/sites" = format("ves-io-system/%s", var.xcSiteName)
+      "owner-id" = "${var.xcNamespace}"
+      "ves.io/sites" = format("ves-io-system/%s", var.xcSiteName)
     }
   }
   spec {
@@ -87,11 +89,34 @@ resource "kubernetes_service" "app-svc" {
   }
 }
 
+resource "volterra_healthcheck" "healthcheck" {
+    name                    = format("%s-healthcheck", var.appName)
+    namespace               = var.xcNamespace
+    http_health_check {
+      path                  = var.healthcheckPath
+      expected_status_codes = [
+        "200"
+      ]
+    }
+    healthy_threshold       = var.healthy_threshold
+    interval                = var.interval
+    timeout                 = var.timeout
+    unhealthy_threshold     = var.unhealthy_threshold
+}
+
 resource "volterra_origin_pool" "origin_pool" {
     name                    = format("%s-origin-pool", var.appName)
     namespace               = var.xcNamespace
+    labels = {
+      owner-id = "${var.xcNamespace}"
+    }
     endpoint_selection      = "LOCAL_PREFERRED"
     loadbalancer_algorithm  = "LB_OVERRIDE"
+    healthcheck {
+      name                  = volterra_healthcheck.healthcheck.name
+      namespace             = volterra_healthcheck.healthcheck.namespace
+      tenant                = var.xcTenant
+    }    
     origin_servers {
             k8s_service {
                 service_name = format("%s-svc.%s",var.appName, var.xcNamespace)
@@ -113,6 +138,9 @@ resource "volterra_http_loadbalancer" "http_lb" {
     name                    = format("%s-http-lb", var.appName)
     namespace               = var.xcNamespace
     description             = format("HTTP Load balancer for %s.%s", var.appName, var.domainName )
+    labels = {
+      owner-id = "${var.xcNamespace}"
+    }
     domains                 = [format("%s.%s", var.appName, var.domainName)]
     advertise_on_public_default_vip = true
     disable_api_definition = true
@@ -126,7 +154,15 @@ resource "volterra_http_loadbalancer" "http_lb" {
           namespace = volterra_origin_pool.origin_pool.namespace
       }
     }
-    disable_waf = true
+    dynamic "app_firewall" {
+      for_each = var.xcDisableWaf ? [] : [1]
+      content {
+        name = var.xcDisableWaf ? null : var.xcWafPolicy
+        namespace =  var.xcDisableWaf ? null :  "shared"
+        tenant = var.xcDisableWaf ? null : var.xcTenant 
+      }
+    }
+    disable_waf = var.xcDisableWaf
     disable_rate_limit              = true
     round_robin                     = true
     no_challenge                    = true
