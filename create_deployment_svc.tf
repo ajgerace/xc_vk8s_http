@@ -93,6 +93,7 @@ resource "volterra_healthcheck" "healthcheck" {
     name                    = format("%s-healthcheck", var.appName)
     namespace               = var.xcNamespace
     http_health_check {
+      host_header = format("%s.%s", var.appName, var.domainName)
       path                  = var.healthcheckPath
       expected_status_codes = [
         "200"
